@@ -7,3 +7,8 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# Корпоративный AI Gateway — НИКОГДА не коммитить!
+.gateway.env
+.access_token
+.refresh_token
