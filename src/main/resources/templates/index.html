@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Распознавание УПД и счетов-фактур</title>
+
+    <!-- Bootstrap 5 + Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+
+    <style>
+        /* ── Общий вид ── */
+        body { background: #f0f4f8; padding-bottom: 60px; }
+
+        /* ── Шапка ── */
+        .app-header {
+            background: linear-gradient(135deg, #1a3a5c 0%, #2563a8 100%);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,.3);
+        }
+        .app-header small { opacity: .7; font-size: .78rem; }
+
+        /* ── Карточки ── */
+        .card { border: none; box-shadow: 0 1px 6px rgba(0,0,0,.1); border-radius: 10px; }
+        .card-title { font-weight: 600; color: #1a3a5c; }
+
+        /* ── Зона drag-and-drop ── */
+        #dropZone {
+            border: 2px dashed #6c9fcf;
+            border-radius: 10px;
+            padding: 44px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: background .18s, border-color .18s;
+            background: #f7fbff;
+        }
+        #dropZone:hover, #dropZone.drag-over {
+            border-color: #0d6efd;
+            background: #e3eeff;
+        }
+        #dropZone .drop-icon { font-size: 3rem; color: #6c9fcf; line-height: 1; }
+
+        /* ── Список файлов ── */
+        .file-item {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: .35rem .7rem;
+            margin-bottom: .35rem;
+        }
+        .file-item.uploaded { border-left: 4px solid #198754; }
+
+        /* ── Таблица результатов ── */
+        #resultsTable thead th {
+            background: #1a3a5c;
+            color: #fff;
+            font-size: .82rem;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        #resultsTable td { vertical-align: middle; font-size: .85rem; }
+        .row-first-item { background: #edf4fd !important; }
+        .row-extra-item { background: #f8fbff; }
+        .row-error      { background: #fff0f0 !important; }
+
+        /* ── Строка статуса ── */
+        #statusBar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            background: #1e2533;
+            color: #5dde76;
+            font-family: 'Consolas', monospace;
+            font-size: .8rem;
+            padding: .45rem 1.2rem;
+            z-index: 1000;
+        }
+        #statusDot { font-size: .55rem; vertical-align: middle; margin-right: .4rem; }
+
+        /* ── Оверлей со спиннером ── */
+        #overlay {
+            position: fixed; inset: 0;
+            background: rgba(10,20,40,.62);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 9999;
+        }
+        #overlay .spinner-border { width: 4.5rem; height: 4.5rem; border-width: .45rem; }
+
+        /* ── Кнопки ── */
+        #btnExportGroup .dropdown-item i { width: 1.4rem; }
+
+        /* ── Переключатель режима ── */
+        .mode-toggle .btn-check:checked + .btn-outline-secondary { background:#6c757d; color:#fff; }
+        .mode-toggle .btn-check:checked + .btn-outline-primary   { background:#0d6efd; color:#fff; }
+
+        /* ── Inline-редактирование ── */
+        td.editable:hover { background: #fffbe6 !important; cursor: text; }
+        td.cell-editing   { background: #fff9c4 !important; outline: 2px solid #ffc107; }
+        #editHint { font-size: .75rem; color: #888; }
+
+        /* ── Поиск ── */
+        #searchWrap { max-width: 320px; }
+        tr.row-hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════ ШАПКА ══════════════════════════════ -->
+<header class="app-header py-3 mb-4">
+    <div class="container">
+        <div class="d-flex align-items-center gap-3">
+            <i class="bi bi-file-earmark-text-fill fs-2"></i>
+            <div>
+                <h1 class="mb-0 fs-5 fw-bold">Система распознавания УПД и счетов-фактур</h1>
+                <small>Универсальный передаточный документ &bull; Счёт-фактура &bull; Товарная накладная &bull; PDF &amp; JPEG</small>
+            </div>
+        </div>
+    </div>
+</header>
+
+<div class="container">
+
+    <!-- ══════════════════ БЛОК ЗАГРУЗКИ ══════════════════ -->
+    <div class="card mb-4">
+        <div class="card-body p-4">
+            <h5 class="card-title mb-3"><i class="bi bi-cloud-upload me-2"></i>Загрузка документов</h5>
+
+            <!-- Drag-and-drop зона -->
+            <div id="dropZone" onclick="fileInput.click()">
+                <div class="drop-icon"><i class="bi bi-cloud-arrow-up"></i></div>
+                <p class="mt-2 mb-1 fw-semibold fs-6">Перетащите файлы сюда или нажмите для выбора</p>
+                <small class="text-muted">Поддерживаются: <strong>PDF</strong>, <strong>JPEG</strong> &bull; Максимум: 50 МБ на файл</small>
+                <input type="file" id="fileInput" multiple accept=".pdf,.jpg,.jpeg" class="d-none">
+            </div>
+
+            <!-- Список выбранных файлов -->
+            <div id="fileListWrap" class="mt-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <small class="text-muted fw-semibold text-uppercase" style="letter-spacing:.05em">Выбранные файлы</small>
+                    <button class="btn btn-sm btn-outline-secondary py-0" onclick="clearFiles()">
+                        <i class="bi bi-x-lg"></i> Очистить
+                    </button>
+                </div>
+                <div id="fileItems"></div>
+            </div>
+
+            <!-- Режим распознавания -->
+            <div class="d-flex align-items-center gap-2 mt-3">
+                <small class="text-muted fw-semibold text-uppercase" style="letter-spacing:.05em">Режим:</small>
+                <div class="btn-group btn-group-sm mode-toggle" role="group">
+                    <input type="radio" class="btn-check" name="parseMode" id="modeRegex" value="auto" checked>
+                    <label class="btn btn-outline-secondary" for="modeRegex">
+                        <i class="bi bi-regex me-1"></i>Regex
+                    </label>
+                    <input type="radio" class="btn-check" name="parseMode" id="modeClaude" value="claude">
+                    <label class="btn btn-outline-primary" for="modeClaude">
+                        <i class="bi bi-stars me-1"></i>Claude AI
+                    </label>
+                </div>
+                <span id="claudeStatus" class="badge bg-secondary d-none ms-1">Claude AI отключён</span>
+            </div>
+
+            <!-- Кнопки действий -->
+            <div class="d-flex flex-wrap gap-2 mt-3 align-items-center">
+                <button id="btnUpload" class="btn btn-primary" onclick="uploadFiles()" disabled>
+                    <i class="bi bi-cloud-arrow-up-fill me-1"></i>Загрузить
+                </button>
+
+                <button id="btnRecognize" class="btn btn-success" onclick="recognizeFiles()" disabled>
+                    <i class="bi bi-cpu-fill me-1"></i>Распознать
+                </button>
+
+                <div class="dropdown" id="btnExportGroup">
+                    <button id="btnExport" class="btn btn-warning dropdown-toggle" data-bs-toggle="dropdown" disabled>
+                        <i class="bi bi-download me-1"></i>Выгрузить данные
+                    </button>
+                    <ul class="dropdown-menu shadow">
+                        <li>
+                            <a class="dropdown-item py-2" href="#" onclick="exportData('excel'); return false;">
+                                <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                                Скачать Excel <small class="text-muted">(.xlsx)</small>
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item py-2" href="#" onclick="exportData('json'); return false;">
+                                <i class="bi bi-filetype-json text-info"></i>
+                                Скачать JSON <small class="text-muted">(.json)</small>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+
+                <button class="btn btn-outline-secondary ms-auto" onclick="resetAll()">
+                    <i class="bi bi-arrow-counterclockwise me-1"></i>Сбросить
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════ СООБЩЕНИЕ ОБ ОШИБКЕ ══════════════════ -->
+    <div id="errorAlert" class="alert alert-danger alert-dismissible d-none" role="alert">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+        <span id="errorText"></span>
+        <button type="button" class="btn-close" onclick="hideError()"></button>
+    </div>
+
+    <!-- ══════════════════ ТАБЛИЦА РЕЗУЛЬТАТОВ ══════════════════ -->
+    <div id="resultsCard" class="card d-none">
+        <div class="card-body p-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-table me-2"></i>Результаты распознавания
+                </h5>
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <!-- Поиск по таблице -->
+                    <div class="input-group input-group-sm" id="searchWrap">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" id="tableSearch"
+                               placeholder="Поиск по таблице..." oninput="filterTable(this.value)">
+                        <button class="btn btn-outline-secondary" type="button"
+                                onclick="clearSearch()" title="Сбросить поиск">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
+                    <!-- Кнопка сохранения правок -->
+                    <button id="btnSaveEdits" class="btn btn-sm btn-warning d-none" onclick="saveEdits()">
+                        <i class="bi bi-floppy-fill me-1"></i>Сохранить правки
+                    </button>
+                    <span id="badgeDocs"  class="badge bg-primary"></span>
+                    <span id="badgeItems" class="badge bg-secondary"></span>
+                </div>
+            </div>
+            <p id="editHint" class="text-muted mb-2 d-none">
+                <i class="bi bi-pencil-square me-1"></i>Дважды кликните по ячейке для редактирования. Enter — применить, Escape — отменить.
+            </p>
+
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover table-sm mb-0" id="resultsTable">
+                    <thead>
+                        <tr>
+                            <th style="min-width:110px">Файл / Тип</th>
+                            <th style="min-width:100px">№ документа</th>
+                            <th style="min-width:100px">Дата</th>
+                            <th style="min-width:160px">Продавец</th>
+                            <th style="min-width:160px">Покупатель</th>
+                            <th style="min-width:200px">Наименование товара</th>
+                            <th class="text-center" style="min-width:80px">Диаметр</th>
+                            <th class="text-center" style="min-width:90px">Марка стали</th>
+                            <th style="min-width:130px">ГОСТ</th>
+                            <th style="min-width:70px">Ед. изм.</th>
+                            <th class="text-end" style="min-width:80px">Кол-во</th>
+                            <th class="text-end" style="min-width:110px">Цена (руб.)</th>
+                            <th class="text-end" style="min-width:130px">Сумма без НДС</th>
+                            <th class="text-center" style="min-width:80px">Ставка НДС</th>
+                            <th class="text-end" style="min-width:130px">Сумма с НДС</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody"></tbody>
+                    <tfoot id="resultsFoot" class="table-light fw-bold"></tfoot>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div><!-- /container -->
+
+<!-- ══════════════════════════ СТРОКА СТАТУСА ══════════════════════════ -->
+<div id="statusBar">
+    <i class="bi bi-circle-fill" id="statusDot" style="color:#5dde76"></i>
+    <span id="statusText">Ожидание загрузки...</span>
+</div>
+
+<!-- ══════════════════════════ СПИННЕР-ОВЕРЛЕЙ ══════════════════════════ -->
+<div id="overlay" class="d-none">
+    <div class="text-center text-white">
+        <div class="spinner-border text-light mb-3" role="status"></div>
+        <p id="overlayText" class="fs-5 fw-semibold mb-0">Обработка...</p>
+    </div>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+   Состояние приложения
+═══════════════════════════════════════════════════════════ */
+let selectedFiles   = [];   // File[]  — выбранные пользователем
+let uploadedNames   = [];   // string[] — имена загруженных на сервер файлов
+let recognizedData  = [];   // DocumentDto[]
+
+/* ══════════════════════════════════════════════════════════
+   DOM-ссылки
+═══════════════════════════════════════════════════════════ */
+const fileInput    = document.getElementById('fileInput');
+const dropZone     = document.getElementById('dropZone');
+const btnUpload    = document.getElementById('btnUpload');
+const btnRecognize = document.getElementById('btnRecognize');
+const btnExport    = document.getElementById('btnExport');
+
+/* ══════════════════════════════════════════════════════════
+   Drag & Drop
+═══════════════════════════════════════════════════════════ */
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    handleFiles([...e.dataTransfer.files]);
+});
+fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
+
+function handleFiles(files) {
+    const valid = files.filter(f => {
+        const n = f.name.toLowerCase();
+        return n.endsWith('.pdf') || n.endsWith('.jpg') || n.endsWith('.jpeg');
+    });
+    if (!valid.length) { showError('Допустимы только файлы PDF и JPEG'); return; }
+
+    // Добавляем к уже выбранным (дедупликация по имени)
+    valid.forEach(f => {
+        if (!selectedFiles.some(s => s.name === f.name)) selectedFiles.push(f);
+    });
+
+    renderFileList();
+    btnUpload.disabled = false;
+    setStatus('Файлы выбраны. Нажмите «Загрузить» для отправки на сервер.', 'yellow');
+    hideError();
+}
+
+function renderFileList() {
+    if (!selectedFiles.length) {
+        document.getElementById('fileListWrap').classList.add('d-none');
+        return;
+    }
+    document.getElementById('fileListWrap').classList.remove('d-none');
+    document.getElementById('fileItems').innerHTML = selectedFiles.map((f, i) => {
+        const isPdf = f.name.toLowerCase().endsWith('.pdf');
+        const icon  = isPdf ? 'bi-file-earmark-pdf-fill text-danger' : 'bi-file-earmark-image-fill text-warning';
+        const badge = isPdf
+            ? '<span class="badge bg-danger ms-1">PDF</span>'
+            : '<span class="badge bg-warning text-dark ms-1">JPEG</span>';
+        const kb = (f.size / 1024).toFixed(1);
+        const uploaded = uploadedNames.includes(f.name) ? 'uploaded' : '';
+        const checkmark = uploadedNames.includes(f.name)
+            ? '<i class="bi bi-check-circle-fill text-success ms-1"></i>' : '';
+        return `
+            <div class="file-item ${uploaded}">
+                <i class="bi ${icon}"></i>
+                <span class="flex-grow-1">${escHtml(f.name)}</span>
+                ${badge}
+                <small class="text-muted">${kb} КБ</small>
+                ${checkmark}
+                <button class="btn btn-sm btn-outline-danger py-0 px-1 ms-1"
+                        onclick="removeFile(${i})" title="Удалить">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>`;
+    }).join('');
+}
+
+function removeFile(idx) {
+    const name = selectedFiles[idx].name;
+    selectedFiles.splice(idx, 1);
+    uploadedNames = uploadedNames.filter(n => n !== name);
+    renderFileList();
+    if (!selectedFiles.length) { btnUpload.disabled = true; setStatus('Ожидание загрузки...', 'green'); }
+}
+
+function clearFiles() {
+    selectedFiles = [];
+    uploadedNames = [];
+    renderFileList();
+    btnUpload.disabled = true;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Загрузка файлов
+═══════════════════════════════════════════════════════════ */
+async function uploadFiles() {
+    if (!selectedFiles.length) return;
+
+    const formData = new FormData();
+    selectedFiles.forEach(f => formData.append('files', f));
+
+    btnUpload.disabled = true;
+    showOverlay('Загрузка файлов на сервер...');
+    setStatus('Загрузка файлов...', 'yellow');
+    hideError();
+
+    try {
+        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const json = await res.json().catch(() => null);
+
+        if (!res.ok) {
+            throw new Error(typeof json === 'string' ? json : (json?.message || `HTTP ${res.status}`));
+        }
+
+        uploadedNames = json.files || [];
+        if (json.warnings?.length) showError('Предупреждения: ' + json.warnings.join('; '));
+
+        renderFileList();   // обновляем галочки
+        btnRecognize.disabled = false;
+        setStatus(`Загружено ${uploadedNames.length} файл(ов). Нажмите «Распознать».`, 'green');
+
+    } catch (e) {
+        showError('Ошибка загрузки: ' + e.message);
+        setStatus('Ошибка загрузки!', 'red');
+        btnUpload.disabled = false;
+    } finally {
+        hideOverlay();
+    }
+}
+
+/* ══════════════════════════════════════════════════════════
+   Распознавание
+═══════════════════════════════════════════════════════════ */
+async function recognizeFiles() {
+    const mode = document.querySelector('input[name="parseMode"]:checked')?.value || 'auto';
+    const modeLabel = mode === 'claude' ? 'Claude AI' : 'Regex';
+
+    btnRecognize.disabled = true;
+    showOverlay(`Идёт распознавание (${modeLabel})...`);
+    setStatus(`Распознавание (${modeLabel})...`, 'yellow');
+    hideError();
+    isDirty = false;
+    document.getElementById('btnSaveEdits').classList.add('d-none');
+
+    try {
+        const res = await fetch(`/recognize?mode=${encodeURIComponent(mode)}`, { method: 'POST' });
+        if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(txt || `HTTP ${res.status}`);
+        }
+        recognizedData = await res.json();
+        renderTable(recognizedData);
+        btnExport.disabled = false;
+        document.getElementById('editHint').classList.remove('d-none');
+
+        const docCount  = recognizedData.length;
+        const itemCount = recognizedData.reduce((s, d) => s + (d.items?.length || 0), 0);
+        setStatus(`Распознавание (${modeLabel}) завершено: документов — ${docCount}, позиций — ${itemCount}`, 'green');
+
+    } catch (e) {
+        showError('Ошибка распознавания: ' + e.message);
+        setStatus('Ошибка распознавания!', 'red');
+        btnRecognize.disabled = false;
+    } finally {
+        hideOverlay();
+    }
+}
+
+/* ══════════════════════════════════════════════════════════
+   Отрисовка таблицы
+═══════════════════════════════════════════════════════════ */
+function renderTable(data) {
+    const tbody = document.getElementById('resultsBody');
+    const tfoot = document.getElementById('resultsFoot');
+    tbody.innerHTML = '';
+    tfoot.innerHTML = '';
+
+    let totalNoTax = 0, totalWithTax = 0, totalItems = 0;
+    let okDocs = 0;
+
+    data.forEach(doc => {
+        const isPdf = doc.sourceFileName?.toLowerCase().endsWith('.pdf');
+        const typeBadge = isPdf
+            ? '<span class="badge bg-danger">PDF</span>'
+            : '<span class="badge bg-warning text-dark">JPEG</span>';
+
+        if (doc.parseStatus === 'ERROR') {
+            const tr = tbody.insertRow();
+            tr.className = 'row-error';
+            tr.innerHTML = `
+                <td>${typeBadge} <span class="small">${escHtml(doc.sourceFileName || '')}</span></td>
+                <td colspan="14" class="text-danger">
+                    <i class="bi bi-exclamation-circle-fill me-1"></i>
+                    ${escHtml(doc.errorMessage || 'Неизвестная ошибка')}
+                </td>`;
+            return;
+        }
+
+        okDocs++;
+        const items = doc.items || [];
+
+        items.forEach((item, idx) => {
+            const tr = tbody.insertRow();
+            tr.className = idx === 0 ? 'row-first-item' : 'row-extra-item';
+
+            const docCells = idx === 0 ? `
+                <td rowspan="${items.length}" class="align-top">
+                    ${typeBadge}
+                    <div class="small text-truncate" style="max-width:120px"
+                         title="${escHtml(doc.sourceFileName || '')}">
+                        ${escHtml(doc.sourceFileName || '')}
+                    </div>
+                </td>
+                <td rowspan="${items.length}" class="fw-semibold align-top">${escHtml(doc.documentNumber || '—')}</td>
+                <td rowspan="${items.length}" class="text-center align-top">${escHtml(doc.documentDate || '—')}</td>
+                <td rowspan="${items.length}" class="small align-top text-muted">${escHtml(doc.seller || '—')}</td>
+                <td rowspan="${items.length}" class="small align-top text-muted">${escHtml(doc.buyer  || '—')}</td>
+            ` : '';
+
+            const diameter   = item.diameter   || '—';
+            const steelGrade = item.steelGrade || '—';
+            const gost       = item.gost       || '—';
+
+            tr.setAttribute('data-doc-idx', data.indexOf(doc));
+            tr.setAttribute('data-item-idx', idx);
+
+            tr.innerHTML = `
+                ${docCells}
+                <td class="editable" ondblclick="makeEditable(this,'itemName')" data-field="itemName">${escHtml(item.itemName || '—')}</td>
+                <td class="text-center editable" ondblclick="makeEditable(this,'diameter')" data-field="diameter">
+                    ${diameter !== '—' ? `<span class="badge bg-info text-dark">${escHtml(diameter)}</span>` : '—'}
+                </td>
+                <td class="text-center editable" ondblclick="makeEditable(this,'steelGrade')" data-field="steelGrade">
+                    ${steelGrade !== '—' ? `<span class="badge bg-success">${escHtml(steelGrade)}</span>` : '—'}
+                </td>
+                <td class="small editable" ondblclick="makeEditable(this,'gost')" data-field="gost">${escHtml(gost)}</td>
+                <td class="text-center editable" ondblclick="makeEditable(this,'unit')" data-field="unit">${escHtml(item.unit || '—')}</td>
+                <td class="text-end editable" ondblclick="makeEditable(this,'quantity')" data-field="quantity">${fmtNum(item.quantity)}</td>
+                <td class="text-end editable" ondblclick="makeEditable(this,'pricePerUnit')" data-field="pricePerUnit">${fmtNum(item.pricePerUnit)}</td>
+                <td class="text-end editable" ondblclick="makeEditable(this,'amountWithoutTax')" data-field="amountWithoutTax">${fmtNum(item.amountWithoutTax)}</td>
+                <td class="text-center editable" ondblclick="makeEditable(this,'taxRate')" data-field="taxRate"><span class="badge bg-secondary">${escHtml(item.taxRate || '—')}</span></td>
+                <td class="text-end fw-semibold editable" ondblclick="makeEditable(this,'amountWithTax')" data-field="amountWithTax">${fmtNum(item.amountWithTax)}</td>`;
+
+            totalNoTax   += parseFloat(item.amountWithoutTax) || 0;
+            totalWithTax += parseFloat(item.amountWithTax)    || 0;
+            totalItems++;
+        });
+    });
+
+    // Строка итогов
+    if (totalItems > 0) {
+        tfoot.innerHTML = `
+            <tr class="table-primary">
+                <td colspan="11" class="text-end fw-bold">ИТОГО (${totalItems} позиций):</td>
+                <td class="text-end fw-bold">${fmtNum(totalNoTax.toFixed(2))}</td>
+                <td></td>
+                <td class="text-end fw-bold text-success">${fmtNum(totalWithTax.toFixed(2))}</td>
+            </tr>`;
+    }
+
+    document.getElementById('badgeDocs').textContent  = `Документов: ${okDocs}`;
+    document.getElementById('badgeItems').textContent = `Позиций: ${totalItems}`;
+    document.getElementById('resultsCard').classList.remove('d-none');
+    document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ══════════════════════════════════════════════════════════
+   Inline-редактирование ячеек
+═══════════════════════════════════════════════════════════ */
+let isDirty = false;
+
+function makeEditable(cell, field) {
+    if (cell.contentEditable === 'true') return;
+
+    // Для ячеек с badge — извлекаем чистый текст
+    const rawText = cell.querySelector('.badge')
+        ? cell.querySelector('.badge').textContent.trim()
+        : cell.textContent.trim();
+
+    cell.innerHTML        = escHtml(rawText === '—' ? '' : rawText);
+    cell.contentEditable  = 'true';
+    cell.classList.add('cell-editing');
+    cell.focus();
+
+    // Выделяем всё
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+
+    const commit = () => {
+        cell.contentEditable = 'false';
+        cell.classList.remove('cell-editing');
+        const newVal = cell.textContent.trim();
+        applyEdit(cell, field, newVal);
+        markDirty();
+    };
+
+    cell.addEventListener('blur', commit, { once: true });
+    cell.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  { e.preventDefault(); cell.blur(); }
+        if (e.key === 'Escape') {
+            cell.removeEventListener('blur', commit);
+            cell.contentEditable = 'false';
+            cell.classList.remove('cell-editing');
+            // Восстанавливаем исходное значение
+            renderTable(recognizedData);
+        }
+    }, { once: true });
+}
+
+function applyEdit(cell, field, newVal) {
+    const tr       = cell.closest('tr');
+    const docIdx   = parseInt(tr.dataset.docIdx,  10);
+    const itemIdx  = parseInt(tr.dataset.itemIdx, 10);
+    if (isNaN(docIdx) || isNaN(itemIdx)) return;
+
+    const item = recognizedData[docIdx]?.items?.[itemIdx];
+    if (!item) return;
+
+    const numFields = ['quantity','pricePerUnit','amountWithoutTax','amountWithTax'];
+    if (numFields.includes(field)) {
+        const num = parseFloat(newVal.replace(/\s/g,'').replace(',','.'));
+        item[field] = isNaN(num) ? 0 : num;
+        cell.textContent = fmtNum(item[field]);
+    } else {
+        item[field] = newVal || null;
+        // Для badge-полей обновляем отображение
+        if (['diameter','steelGrade'].includes(field) && newVal) {
+            const cls = field === 'diameter' ? 'bg-info text-dark' : 'bg-success';
+            cell.innerHTML = `<span class="badge ${cls}">${escHtml(newVal)}</span>`;
+        } else if (field === 'taxRate' && newVal) {
+            cell.innerHTML = `<span class="badge bg-secondary">${escHtml(newVal)}</span>`;
+        }
+    }
+}
+
+function markDirty() {
+    isDirty = true;
+    document.getElementById('btnSaveEdits').classList.remove('d-none');
+}
+
+async function saveEdits() {
+    showOverlay('Сохранение изменений...');
+    try {
+        const res = await fetch('/update', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(recognizedData)
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        isDirty = false;
+        document.getElementById('btnSaveEdits').classList.add('d-none');
+        setStatus('Изменения сохранены. Можно выгружать.', 'green');
+    } catch (e) {
+        showError('Ошибка сохранения: ' + e.message);
+    } finally {
+        hideOverlay();
+    }
+}
+
+/* ══════════════════════════════════════════════════════════
+   Поиск / фильтр таблицы
+═══════════════════════════════════════════════════════════ */
+function filterTable(query) {
+    const q   = query.trim().toLowerCase();
+    const rows = document.querySelectorAll('#resultsBody tr');
+    rows.forEach(tr => {
+        const text = tr.textContent.toLowerCase();
+        tr.classList.toggle('row-hidden', q.length > 0 && !text.includes(q));
+    });
+}
+
+function clearSearch() {
+    const inp = document.getElementById('tableSearch');
+    inp.value = '';
+    filterTable('');
+    inp.focus();
+}
+
+/* ══════════════════════════════════════════════════════════
+   Экспорт
+═══════════════════════════════════════════════════════════ */
+async function exportData(format) {
+    // Если есть несохранённые правки — сначала синхронизируем
+    if (isDirty) {
+        await saveEdits();
+    }
+    window.location.href = '/export/' + format;
+    setStatus(`Формируется файл для скачивания (${format.toUpperCase()})...`, 'green');
+}
+
+/* ══════════════════════════════════════════════════════════
+   Сброс
+═══════════════════════════════════════════════════════════ */
+function resetAll() {
+    selectedFiles  = [];
+    uploadedNames  = [];
+    recognizedData = [];
+    isDirty        = false;
+    fileInput.value = '';
+
+    document.getElementById('fileListWrap').classList.add('d-none');
+    document.getElementById('fileItems').innerHTML = '';
+    document.getElementById('resultsCard').classList.add('d-none');
+    document.getElementById('resultsBody').innerHTML = '';
+    document.getElementById('resultsFoot').innerHTML = '';
+    document.getElementById('tableSearch').value = '';
+    document.getElementById('btnSaveEdits').classList.add('d-none');
+    document.getElementById('editHint').classList.add('d-none');
+
+    btnUpload.disabled    = true;
+    btnRecognize.disabled = true;
+    btnExport.disabled    = true;
+
+    hideError();
+    setStatus('Сброшено. Ожидание загрузки...', 'green');
+
+    fetch('/reset', { method: 'POST' }).catch(() => {});
+}
+
+/* ══════════════════════════════════════════════════════════
+   UI-утилиты
+═══════════════════════════════════════════════════════════ */
+const COLORS = { green: '#5dde76', yellow: '#ffd54f', red: '#ff6b6b' };
+
+function setStatus(text, color) {
+    document.getElementById('statusText').textContent = text;
+    document.getElementById('statusDot').style.color  = COLORS[color] || COLORS.green;
+}
+
+function showOverlay(text) {
+    document.getElementById('overlayText').textContent = text;
+    document.getElementById('overlay').classList.remove('d-none');
+}
+function hideOverlay() { document.getElementById('overlay').classList.add('d-none'); }
+
+function showError(msg)  {
+    document.getElementById('errorText').textContent = msg;
+    document.getElementById('errorAlert').classList.remove('d-none');
+}
+function hideError() { document.getElementById('errorAlert').classList.add('d-none'); }
+
+function fmtNum(val) {
+    if (val === null || val === undefined || val === '') return '—';
+    const n = parseFloat(val);
+    if (isNaN(n)) return String(val);
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function escHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>
