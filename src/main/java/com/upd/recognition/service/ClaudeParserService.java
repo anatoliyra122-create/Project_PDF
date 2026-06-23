@@ -135,8 +135,12 @@ public class ClaudeParserService {
             }
 
             // OpenAI-формат: choices[0].message.content
-            String content = root.path("choices").get(0)
-                .path("message").path("content").asText();
+            JsonNode choices = root.path("choices");
+            if (!choices.isArray() || choices.isEmpty()) {
+                log.warn("AI Gateway: пустой choices в ответе для '{}'", fileName);
+                return null;
+            }
+            String content = choices.get(0).path("message").path("content").asText();
 
             log.debug("AI Gateway ответил {} символов для '{}'", content.length(), fileName);
 
