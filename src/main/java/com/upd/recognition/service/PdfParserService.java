@@ -4,15 +4,22 @@ import com.upd.recognition.dto.DocumentDto;
 import com.upd.recognition.dto.DocumentItemDto;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.ImageType;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.regex.*;
 
@@ -28,6 +35,21 @@ import java.util.regex.*;
 public class PdfParserService {
 
     private static final Logger log = LoggerFactory.getLogger(PdfParserService.class);
+
+    // ── Извлечение метаданных из имени файла ──────────────────────────────────
+    // "ТТН УП-14562" или "УПД № АБ-123" в имени файла
+    private static final Pattern P_FNAME_NUM = Pattern.compile(
+        "(?:УПД|ТТН|ТН|СФ|ТОРГ-?12)[\\s_-]*((?:[А-ЯЁA-Z]{1,4}[-])?[\\d]+)",
+        Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    // "21.05.2026" или "05,05,2026" — дата в имени файла
+    private static final Pattern P_FNAME_DATE = Pattern.compile(
+        "(\\d{1,2}[.,/]\\d{1,2}[.,/]\\d{4})");
+
+    // Компания перед ТТН/УПД: "ООО ПКФ ДИПОС ТТН ...", "ТОРГОВЫЙ ДОМ БМЗ_..."
+    private static final Pattern P_FNAME_COMPANY = Pattern.compile(
+        "^(?:\\d+__?)?(.+?)(?:\\s*[_-]\\s*(?:ТТН|УПД|ТН|СФ|\\d{2}[.,]))",
+        Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     // ── Номер документа ───────────────────────────────────────────────────────
     // "Счет-фактура№ УП-14562", "УПД № 123", "ТТН №25", "СФ-45/А"
@@ -117,6 +139,26 @@ public class PdfParserService {
         MONTHS.put("октября","10"); MONTHS.put("ноября","11"); MONTHS.put("декабря","12");
     }
 
+    /** Минимальное кол-во символов из PDFBox — если меньше, PDF считается сканом */
+    private static final int MIN_TEXT_LENGTH = 50;
+
+    /**
+     * Минимальная доля «осмысленных» символов (кириллица+латиница) в тексте.
+     * Если PDFBox вернул текст, но большинство символов — мусор (спецсимволы,
+     * ASCII-art из таблиц и т.п.), будем считать документ «скан-подобным»
+     * и попробуем OCR.
+     */
+    private static final double MIN_ALPHA_RATIO = 0.20;
+
+    @Value("${app.tesseract.enabled:false}")
+    private boolean tesseractEnabled;
+
+    @Value("${app.tesseract.data-path:}")
+    private String tessDataPath;
+
+    @Value("${app.tesseract.language:rus+eng}")
+    private String tessLanguage;
+
     @Autowired
     private MockDocumentGenerator mockGenerator;
 
@@ -138,27 +180,132 @@ public class PdfParserService {
     }
 
     /**
-     * Извлекает сырой текст из PDF-файла (для передачи в Claude или другой парсер).
+     * Извлекает текст из PDF.
+     *
+     * Стратегия:
+     *  1. PDFBox с sortByPosition=true — лучше справляется с табличными PDF.
+     *  2. Если текста мало (<50 символов) ИЛИ он «мусорный» (мало букв) — пробуем OCR.
+     *  3. Если OCR отключён — возвращаем что есть (может попасть на mock).
      */
     public String extractText(File file) throws Exception {
         try (PDDocument document = Loader.loadPDF(file)) {
             PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);   // ← ключ для корректного порядка в таблицах
             String text = stripper.getText(document);
             log.debug("PDF '{}': {} символов, {} страниц",
                 file.getName(), text.length(), document.getNumberOfPages());
+
+            if (text.trim().length() >= MIN_TEXT_LENGTH && isReadableText(text)) {
+                return text;   // нормальный текстовый PDF
+            }
+
+            // PDF-скан или мусорный текст — пробуем OCR через Tesseract
+            if (tesseractEnabled) {
+                log.info("PDF '{}' похож на скан или таблицу ({} симв., читаемость={}) — запускаю OCR",
+                    file.getName(), text.trim().length(),
+                    String.format("%.0f%%", alphaRatio(text) * 100));
+                return extractTextByOcr(document, file.getName());
+            }
+
+            log.debug("PDF '{}': Tesseract отключён, возвращаю сырой текст PDFBox", file.getName());
             return text;
+        }
+    }
+
+    /** Возвращает true, если в тексте достаточно букв (кириллица + латиница). */
+    private boolean isReadableText(String text) {
+        return alphaRatio(text) >= MIN_ALPHA_RATIO;
+    }
+
+    private double alphaRatio(String text) {
+        if (text == null || text.isEmpty()) return 0.0;
+        long alphaCount = text.chars()
+            .filter(c -> Character.isLetter(c))
+            .count();
+        return (double) alphaCount / text.length();
+    }
+
+    /**
+     * Рендерит каждую страницу PDF в изображение и запускает Tesseract OCR.
+     */
+    private String extractTextByOcr(PDDocument document, String fileName) {
+        List<File> pageImages = new ArrayList<>();
+        StringBuilder combined = new StringBuilder();
+        try {
+            PDFRenderer renderer = new PDFRenderer(document);
+            for (int i = 0; i < document.getNumberOfPages(); i++) {
+                // 300 DPI — оптимально для табличных документов (600 DPI избыточно и снижает качество OCR)
+                BufferedImage img = renderer.renderImageWithDPI(i, 300, ImageType.GRAY);
+                File tmpImg = Files.createTempFile("page_" + i + "_", ".png").toFile();
+                ImageIO.write(img, "PNG", tmpImg);
+                pageImages.add(tmpImg);
+
+                String pageText = ocrImage(tmpImg);
+                if (pageText != null && !pageText.isBlank()) {
+                    combined.append(pageText).append("\n");
+                }
+                log.debug("OCR страница {}/{} '{}': {} символов", i + 1, document.getNumberOfPages(), fileName, pageText == null ? 0 : pageText.length());
+            }
+        } catch (Exception e) {
+            log.error("Ошибка OCR для '{}': {}", fileName, e.getMessage());
+        } finally {
+            pageImages.forEach(File::delete);
+        }
+        String result = combined.toString();
+        if (!result.isBlank()) {
+            log.debug("OCR полный текст для '{}' (первые 1000 симв.):\n{}", fileName,
+                result.substring(0, Math.min(1000, result.length())));
+        }
+        return result;
+    }
+
+    /** Вызывает Tesseract через Tess4J для одного изображения. */
+    private String ocrImage(File imageFile) {
+        try {
+            Class<?> tc = Class.forName("net.sourceforge.tess4j.Tesseract");
+            Object t = tc.getDeclaredConstructor().newInstance();
+            if (!tessDataPath.isBlank())
+                tc.getMethod("setDatapath", String.class).invoke(t, tessDataPath);
+            tc.getMethod("setLanguage", String.class).invoke(t, tessLanguage);
+            // PSM 6 — единый блок текста: лучше подходит для табличных документов (ТТН, УПД)
+            tc.getMethod("setPageSegMode", int.class).invoke(t, 6);
+            // OEM 1 — только LSTM (нейросетевой движок): точнее для русского языка
+            tc.getMethod("setOcrEngineMode", int.class).invoke(t, 1);
+            return (String) tc.getMethod("doOCR", File.class).invoke(t, imageFile);
+        } catch (ClassNotFoundException e) {
+            log.warn("Tess4J не найден в classpath");
+            return "";
+        } catch (Throwable e) {
+            log.warn("OCR изображения не удался: {}", e.getMessage());
+            return "";
         }
     }
 
     // ─── Основной разбор ──────────────────────────────────────────────────────
 
     public DocumentDto parseText(String text, String fileName) {
+        log.debug("parseText '{}': {} символов, первые 500 симв.:\n{}",
+            fileName, text == null ? 0 : text.length(),
+            text == null ? "null" : text.substring(0, Math.min(500, text.length())));
 
-        // 1. Извлекаем метаданные документа
+        // 1. Извлекаем метаданные документа (из текста)
         String docNumber = findGroup(P_DOC_NUM,      text, 1);
         String docDate   = findDocDate(text);
         String seller    = findGroup(P_SELLER,        text, 1);
         String buyer     = findGroup(P_BUYER,         text, 1);
+
+        // 1a. Если из текста метаданные не найдены — пробуем извлечь из имени файла
+        if (docNumber == null) docNumber = findGroup(P_FNAME_NUM,     fileName, 1);
+        if (docDate   == null) {
+            Matcher dm = P_FNAME_DATE.matcher(fileName);
+            if (dm.find()) docDate = dm.group(1).replace(",", ".");
+        }
+        if (seller == null) {
+            // Убираем расширение, затем извлекаем компанию из начала имени файла
+            String baseName = fileName.replaceAll("(?i)\\.pdf$|\\.jpg$|\\.jpeg$", "");
+            Matcher cm = P_FNAME_COMPANY.matcher(baseName);
+            if (cm.find()) seller = cm.group(1).replaceAll("[_]", " ").trim();
+        }
 
         // 2. Пробуем key-value (ключевые слова) — подходит для ваших УПД/ТТН
         List<DocumentItemDto> items = parseKeyValue(text);
@@ -168,7 +315,7 @@ public class PdfParserService {
             items = parseTableRows(text);
         }
 
-        // 4. Если и это не дало результата — mock с найденными метаданными
+        // 4. Если и это не дало результата — заглушка с метаданными из имени файла
         if (items.isEmpty()) {
             log.debug("PDF '{}': паттерны не сработали — использую mock-данные", fileName);
             DocumentDto mock = mockGenerator.generate(fileName);
